@@ -1,8 +1,9 @@
 import json
-import anthropic
+
+from llm_client import DEFAULT_GEMINI_MODEL
 
 
-def analyze(sections_content: dict[str, str], client: anthropic.Anthropic) -> dict:
+def analyze(sections_content: dict[str, str], client) -> dict:
     print("🔗 [CoherenceAgent] 整合性を分析中...")
 
     sections_text = "\n\n".join(
@@ -33,7 +34,7 @@ def analyze(sections_content: dict[str, str], client: anthropic.Anthropic) -> di
 """
 
     message = client.messages.create(
-        model="claude-opus-4-5",
+        model=getattr(client, "model", DEFAULT_GEMINI_MODEL),
         max_tokens=2000,
         system=system_prompt,
         messages=[{"role": "user", "content": f"以下のnote記事セクションの整合性を分析してください:\n\n{sections_text}"}]
@@ -62,7 +63,7 @@ def analyze(sections_content: dict[str, str], client: anthropic.Anthropic) -> di
 def run(
     sections_content: dict[str, str],
     edited_section_name: str,
-    client: anthropic.Anthropic
+    client
 ) -> tuple[str, dict]:
     report = analyze(sections_content, client)
 
@@ -106,7 +107,7 @@ def run(
 調整済みの全文Markdownのみを出力してください。"""
 
     message = client.messages.create(
-        model="claude-opus-4-5",
+        model=getattr(client, "model", DEFAULT_GEMINI_MODEL),
         max_tokens=5000,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]

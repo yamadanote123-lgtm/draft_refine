@@ -44,12 +44,14 @@
 ### 必要環境
 
 - Python 3.10 以上
-- Anthropic API キー
+- Gemini API キー
 
 ### インストール
 
 ```bash
-pip install anthropic
+pip install google-genai
+# または
+pip install google-generativeai
 
 # 音声フィードバックを使う場合
 pip install openai-whisper
@@ -61,7 +63,8 @@ brew install sox
 ### 環境変数
 
 ```bash
-export ANTHROPIC_API_KEY='your-api-key-here'
+export GEMINI_API_KEY='your-api-key-here'
+export GEMINI_MODEL='gemini-2.5-flash'
 ```
 
 ## ワークフロー

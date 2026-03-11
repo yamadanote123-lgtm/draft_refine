@@ -1,12 +1,13 @@
 import json
-import anthropic
+
+from llm_client import DEFAULT_GEMINI_MODEL
 
 
 def run(
     sections_content: dict[str, str],
     feedback: str,
     target_hint: str | None,
-    client: anthropic.Anthropic
+    client
 ) -> dict:
     print("🔍 [CriticAgent] フィードバックを分析中...")
 
@@ -59,7 +60,7 @@ def run(
 {feedback}"""
 
     message = client.messages.create(
-        model="claude-opus-4-5",
+        model=getattr(client, "model", DEFAULT_GEMINI_MODEL),
         max_tokens=2000,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]

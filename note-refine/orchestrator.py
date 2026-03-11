@@ -5,24 +5,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from llm_client import get_client
+
 from section_manager import (
     get_article_dir, list_sections, read_section, write_section,
     find_section_by_name, write_all, read_all, split_markdown_to_sections,
     save_section_iteration, load_state, save_state, append_history,
     print_section_list, build_all
 )
-
-
-def get_client():
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("❌ ANTHROPIC_API_KEY 環境変数が設定されていません。")
-        print("設定方法: export ANTHROPIC_API_KEY='your-api-key'")
-        sys.exit(1)
-    import anthropic
-    return anthropic.Anthropic(api_key=api_key)
-
-
 def cmd_setup(args):
     source = Path(args.setup)
     if not source.exists():

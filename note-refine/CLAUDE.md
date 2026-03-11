@@ -112,10 +112,10 @@ python orchestrator.py --article drafts/sample_article --coherence-only
 
 | 変数名 | 説明 |
 |--------|------|
-| `ANTHROPIC_API_KEY` | Anthropic APIキー（必須） |
+| `GEMINI_API_KEY` | Gemini APIキー（必須） |
 
 ```bash
-export ANTHROPIC_API_KEY='your-api-key-here'
+export GEMINI_API_KEY='your-api-key-here'
 ```
 
 ---
@@ -123,7 +123,7 @@ export ANTHROPIC_API_KEY='your-api-key-here'
 ## 依存パッケージ
 
 ```bash
-pip install anthropic          # Claude API クライアント（必須）
+pip install google-genai       # Gemini API クライアント（推奨）
 pip install openai-whisper     # 音声文字起こし（音声フィードバック使用時）
 ```
 

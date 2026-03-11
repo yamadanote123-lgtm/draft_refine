@@ -1,2 +1,0 @@
-- 記事編集 | note
-- Copy as Markdown - Chrome ウェブストア

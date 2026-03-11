@@ -1,4 +1,4 @@
-import anthropic
+from llm_client import DEFAULT_GEMINI_MODEL
 
 
 def run(
@@ -6,7 +6,7 @@ def run(
     target_content: str,
     all_sections_content: dict[str, str],
     critique: dict,
-    client: anthropic.Anthropic
+    client
 ) -> str:
     print(f"✍️  [EditorAgent] {target_section_name} を改善中...")
 
@@ -45,7 +45,7 @@ def run(
 改善済みのセクション内容のみを出力してください。"""
 
     message = client.messages.create(
-        model="claude-opus-4-5",
+        model=getattr(client, "model", DEFAULT_GEMINI_MODEL),
         max_tokens=3000,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]

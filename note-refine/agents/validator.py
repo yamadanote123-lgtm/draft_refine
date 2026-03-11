@@ -1,5 +1,6 @@
 import json
-import anthropic
+
+from llm_client import DEFAULT_GEMINI_MODEL
 
 
 def run(
@@ -8,7 +9,7 @@ def run(
     feedback: str,
     improved: str,
     critique: dict,
-    client: anthropic.Anthropic
+    client
 ) -> dict:
     print(f"✅ [ValidatorAgent] {section_name} の改善結果を検証中...")
 
@@ -55,7 +56,7 @@ coherence_riskは「この編集が他セクションとの整合性を崩すリ
 {json.dumps(critique, ensure_ascii=False, indent=2)}"""
 
     message = client.messages.create(
-        model="claude-opus-4-5",
+        model=getattr(client, "model", DEFAULT_GEMINI_MODEL),
         max_tokens=2000,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]
