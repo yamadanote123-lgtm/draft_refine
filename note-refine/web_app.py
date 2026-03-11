@@ -347,6 +347,48 @@ class StreamHandler(tornado.web.RequestHandler):
                 break
 
 
+# ── 履歴・差分データ ──────────────────────────────────────────────
+
+class IterationsHandler(BaseHandler):
+    """各イテレーションの前後コンテンツを返す"""
+
+    def get(self, name):
+        article_dir = DRAFTS_DIR / name
+        if not article_dir.exists():
+            return self.err("見つかりません", 404)
+
+        state = load_state(article_dir)
+        history = state.get("history", [])
+        idir = article_dir / "iterations"
+
+        result = []
+        for h in history:
+            iter_num = h["iter"]
+            target = h.get("target_section", "")
+            stem = Path(target).stem if target else ""
+
+            # after スナップショット
+            after_path = (idir / f"{stem}_iter{iter_num:02d}.md") if stem else None
+            after_content = (
+                after_path.read_text(encoding="utf-8")
+                if after_path and after_path.exists()
+                else None
+            )
+
+            # before スナップショット: 同セクションの直前イテレーション
+            before_content = None
+            if stem:
+                for prev in range(iter_num - 1, 0, -1):
+                    bp = idir / f"{stem}_iter{prev:02d}.md"
+                    if bp.exists():
+                        before_content = bp.read_text(encoding="utf-8")
+                        break
+
+            result.append({**h, "after_content": after_content, "before_content": before_content})
+
+        self.ok(result)
+
+
 # ── 音声文字起こし ────────────────────────────────────────────────
 
 class TranscribeHandler(BaseHandler):
@@ -410,9 +452,10 @@ def make_app():
         (r"/api/articles",                  ArticlesHandler),
         (r"/api/articles/([^/]+)",          ArticleHandler),
         (r"/api/articles/([^/]+)/refine",   RefineHandler),
-        (r"/api/articles/([^/]+)/coherence",CoherenceOnlyHandler),
-        (r"/api/jobs/([^/]+)/stream",       StreamHandler),
-        (r"/api/transcribe",                TranscribeHandler),
+        (r"/api/articles/([^/]+)/coherence",  CoherenceOnlyHandler),
+        (r"/api/articles/([^/]+)/iterations", IterationsHandler),
+        (r"/api/jobs/([^/]+)/stream",         StreamHandler),
+        (r"/api/transcribe",                  TranscribeHandler),
     ])
 
 
@@ -464,10 +507,57 @@ header h1 { font-size: 16px; font-weight: 700; display: flex; align-items: cente
 .header-spacer { flex: 1; }
 .btn-icon { background: var(--surface3); border: 1px solid var(--border); color: var(--text); padding: 6px 12px; border-radius: var(--radius); cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 6px; transition: all .15s; }
 .btn-icon:hover { background: var(--border); }
-.workspace { display: grid; grid-template-columns: 260px 1fr; overflow: hidden; }
+.workspace { display: grid; grid-template-columns: var(--sidebar-w, 260px) 5px 1fr; overflow: hidden; }
 
 /* Sidebar */
-.sidebar { background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+.sidebar { background: var(--surface); display: flex; flex-direction: column; overflow: hidden; transition: none; }
+.sidebar-hdr { display: flex; align-items: center; padding: 0 10px; border-bottom: 1px solid var(--border); min-height: 44px; gap: 8px; flex-shrink: 0; }
+.sidebar-hdr-title { font-size: 12px; font-weight: 600; color: var(--muted2); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-inner { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.sidebar.collapsed .sidebar-inner { display: none; }
+.sidebar.collapsed .sidebar-hdr-title { display: none; }
+.sidebar.collapsed .sidebar-hdr { justify-content: center; padding: 0; }
+.btn-toggle-sb { background: none; border: 1px solid var(--border); color: var(--muted); width: 24px; height: 24px; border-radius: 5px; cursor: pointer; font-size: 11px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all .15s; }
+.btn-toggle-sb:hover { border-color: var(--purple); color: var(--purple-light); background: color-mix(in srgb, var(--purple) 8%, transparent); }
+/* History tab */
+.tab-panel-fill { padding: 0 !important; overflow: hidden !important; }
+.hist-layout { display: grid; grid-template-columns: 210px 1fr; height: 100%; min-height: 0; overflow: hidden; }
+.hist-timeline { border-right: 1px solid var(--border); overflow-y: auto; }
+.hist-timeline::-webkit-scrollbar { width: 4px; }
+.hist-timeline::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+.hist-detail { overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.hist-detail::-webkit-scrollbar { width: 6px; }
+.hist-detail::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.hist-entry { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background .12s; border-left: 3px solid transparent; }
+.hist-entry:hover { background: var(--surface2); }
+.hist-entry.active { background: var(--surface3); border-left-color: var(--purple); }
+.he-row { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.he-num { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); }
+.he-sec { font-size: 11px; color: var(--purple-light); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.he-fb { font-size: 11px; color: var(--muted2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist-diff-meta { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; }
+.hist-diff-meta-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.hist-no-sel { display: flex; align-items: center; justify-content: center; height: 200px; color: var(--muted); font-size: 13px; }
+
+/* Resize handles */
+.resize-h {
+  background: var(--border); cursor: col-resize; position: relative; z-index: 20;
+  transition: background .15s;
+  display: flex; align-items: center; justify-content: center;
+}
+.resize-h::after { content: ''; width: 1px; height: 40px; background: var(--border2); border-radius: 1px; }
+.resize-h:hover, .resize-h.dragging { background: var(--purple); }
+.resize-h:hover::after, .resize-h.dragging::after { background: var(--purple-light); }
+.resize-v {
+  flex-shrink: 0; height: 5px; background: var(--border); cursor: row-resize; position: relative;
+  transition: background .15s; z-index: 20;
+  display: flex; align-items: center; justify-content: center;
+}
+.resize-v::after { content: ''; height: 1px; width: 40px; background: var(--border2); border-radius: 1px; }
+.resize-v:hover, .resize-v.dragging { background: var(--purple); }
+.resize-v:hover::after, .resize-v.dragging::after { background: var(--purple-light); }
+body.resizing-h * { cursor: col-resize !important; user-select: none !important; }
+body.resizing-v * { cursor: row-resize !important; user-select: none !important; }
 .sidebar-section { padding: 12px 14px; border-bottom: 1px solid var(--border); }
 .sb-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 8px; }
 .sidebar-scroll { flex: 1; overflow-y: auto; }
@@ -500,11 +590,39 @@ select:focus { border-color: var(--purple); }
 
 /* Main */
 .main { display: flex; flex-direction: column; overflow: hidden; }
-.tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--surface); padding: 0 16px; }
+.tabs { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--border); background: var(--surface); padding: 0 16px; }
 .tab { padding: 10px 16px; font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); transition: all .15s; }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--purple-light); border-bottom-color: var(--purple); }
+.tabs-spacer { flex: 1; min-width: 12px; }
+#pipeHeader { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 10px; margin-left: auto; background: color-mix(in srgb, var(--surface3) 88%, transparent); border: 1px solid var(--border); border-radius: 999px; }
+#pipeHeader .pipe-agent { flex-direction: row; gap: 6px; flex: 0 0 auto; min-width: 0; }
+#pipeHeader .pipe-dot { width: 24px; height: 24px; font-size: 12px; border-width: 1.5px; }
+#pipeHeader .pipe-lbl { font-size: 11px; white-space: nowrap; }
+#pipeHeader .pipe-arrow { font-size: 11px; }
+#ppStatus { font-size: 11px; color: var(--muted); white-space: nowrap; padding-left: 4px; border-left: 1px solid var(--border); }
+#contentPane { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .content-wrapper { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+/* レイアウト切り替えボタン */
+.btn-layout { padding: 3px 10px; font-size: 11px; font-weight: 500; background: var(--surface3); border: 1px solid var(--border); color: var(--muted); border-radius: 5px; cursor: pointer; transition: all .15s; display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.btn-layout:hover { border-color: var(--purple); color: var(--purple-light); }
+.btn-layout.active { background: color-mix(in srgb, var(--purple) 15%, transparent); border-color: var(--purple); color: var(--purple-light); }
+
+/* スプリットハンドル（TB・LR 両用）*/
+.resize-split { flex-shrink: 0; background: var(--border); position: relative; z-index: 20; transition: background .15s; display: flex; align-items: center; justify-content: center; /* TB デフォルト */ height: 5px; width: auto; cursor: row-resize; }
+.resize-split::after { content: ''; width: 40px; height: 1px; background: var(--border2); border-radius: 1px; }
+.resize-split:hover, .resize-split.dragging { background: var(--purple); }
+.resize-split:hover::after, .resize-split.dragging::after { background: var(--purple-light); }
+body.rs-v * { cursor: row-resize !important; user-select: none !important; }
+body.rs-h * { cursor: col-resize !important; user-select: none !important; }
+
+/* 左右レイアウト */
+#artView.layout-lr { flex-direction: row !important; }
+#artView.layout-lr #contentPane { flex: 1; }
+#artView.layout-lr .resize-split { width: 5px; height: auto; cursor: col-resize; flex-direction: column; }
+#artView.layout-lr .resize-split::after { width: 1px; height: 40px; }
+#artView.layout-lr #bottomBar { width: var(--panel-w, 380px) !important; height: auto !important; min-height: 0; overflow-y: auto; border-left: 1px solid var(--border); flex-shrink: 0; }
 .tab-panel { display: none; flex: 1; overflow-y: auto; padding: 16px 20px; }
 .tab-panel.active { display: flex; flex-direction: column; gap: 14px; }
 .tab-panel::-webkit-scrollbar { width: 6px; }
@@ -660,6 +778,17 @@ input[type=text]:focus, input[type=password]:focus { border-color: var(--purple)
 .mic-status.rec { color: var(--red); }
 .mic-status.proc { color: var(--yellow); }
 
+@media (max-width: 1200px) {
+  #pipeHeader .pipe-lbl { display: none; }
+}
+
+@media (max-width: 980px) {
+  .tabs { flex-wrap: wrap; padding: 6px 12px; }
+  .tabs-spacer { display: none; }
+  #pipeHeader { order: 10; width: 100%; justify-content: flex-start; margin: 0 0 6px; border-radius: 10px; }
+  .btn-layout { margin-left: 0; }
+}
+
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
@@ -679,27 +808,36 @@ input[type=text]:focus, input[type=password]:focus { border-color: var(--purple)
 <div class="workspace">
 <!-- Sidebar -->
 <aside class="sidebar">
-  <div class="sidebar-section">
-    <div class="sb-title">記事</div>
-    <select id="articleSelect" onchange="onArticleChange(this.value)">
-      <option value="">-- 記事を選択 --</option>
-    </select>
-    <div class="art-actions">
-      <button class="btn-sm" onclick="openNewArticle()">＋ 新規作成</button>
-      <button class="btn-sm" onclick="loadArticles()">↻ 更新</button>
-    </div>
+  <div class="sidebar-hdr">
+    <span class="sidebar-hdr-title">📋 記事ナビ</span>
+    <button class="btn-toggle-sb" id="sidebarToggleBtn" onclick="toggleSidebar()" title="サイドバーを閉じる">◀</button>
   </div>
-  <div class="sidebar-scroll">
-    <div class="sidebar-section" id="secListWrap" style="display:none">
-      <div class="sb-title">セクション</div>
-      <div id="secList"></div>
+  <div class="sidebar-inner">
+    <div class="sidebar-section">
+      <div class="sb-title">記事</div>
+      <select id="articleSelect" onchange="onArticleChange(this.value)">
+        <option value="">-- 記事を選択 --</option>
+      </select>
+      <div class="art-actions">
+        <button class="btn-sm" onclick="openNewArticle()">＋ 新規作成</button>
+        <button class="btn-sm" onclick="loadArticles()">↻ 更新</button>
+      </div>
     </div>
-    <div class="sidebar-section" id="histWrap" style="display:none">
-      <div class="sb-title">履歴</div>
-      <div id="histList"></div>
+    <div class="sidebar-scroll">
+      <div class="sidebar-section" id="secListWrap" style="display:none">
+        <div class="sb-title">セクション</div>
+        <div id="secList"></div>
+      </div>
+      <div class="sidebar-section" id="histWrap" style="display:none">
+        <div class="sb-title">履歴サマリー</div>
+        <div id="histList"></div>
+      </div>
     </div>
   </div>
 </aside>
+
+<!-- Sidebar ↔ Main リサイズハンドル -->
+<div class="resize-h" id="sidebarHandle" title="ドラッグでサイズ変更 / ダブルクリックでリセット"></div>
 
 <!-- Main -->
 <main class="main">
@@ -713,11 +851,25 @@ input[type=text]:focus, input[type=password]:focus { border-color: var(--purple)
   </div>
 
   <div id="artView" style="display:none;flex-direction:column;height:100%;overflow:hidden;">
+    <div id="contentPane">
     <!-- Tabs -->
     <div class="tabs">
       <div class="tab active" data-tab="current" onclick="switchTab('current')">現在のセクション</div>
       <div class="tab" data-tab="compare" onclick="switchTab('compare')">✨ 改善前後</div>
       <div class="tab" data-tab="all" onclick="switchTab('all')">全文</div>
+      <div class="tab" data-tab="history" onclick="switchTab('history')">📜 履歴</div>
+      <div class="tabs-spacer"></div>
+      <div id="pipeHeader">
+        <div class="pipe-agent" id="ppCritic"><div class="pipe-dot" style="--pipe-color:var(--critic)">🔍</div><div class="pipe-lbl">Critic</div></div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-agent" id="ppEditor"><div class="pipe-dot" style="--pipe-color:var(--editor)">✍️</div><div class="pipe-lbl">Editor</div></div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-agent" id="ppValidator"><div class="pipe-dot" style="--pipe-color:var(--validator)">✅</div><div class="pipe-lbl">Validator</div></div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-agent" id="ppCoherence"><div class="pipe-dot" style="--pipe-color:var(--coherence)">🔗</div><div class="pipe-lbl">Coherence</div></div>
+        <div id="ppStatus">待機中</div>
+      </div>
+      <button class="btn-layout" id="btnLayout" onclick="toggleLayout()" title="レイアウト切り替え">⬛ 上下</button>
     </div>
 
     <div class="content-wrapper">
@@ -748,23 +900,25 @@ input[type=text]:focus, input[type=password]:focus { border-color: var(--purple)
       <div id="tabAll" class="tab-panel">
         <div class="card"><div class="card-title">全文 (all.md)</div><div id="allMd" class="md"></div></div>
       </div>
-    </div>
-
-    <!-- Bottom bar -->
-    <div style="border-top:1px solid var(--border);background:var(--bg);padding:12px 18px;display:flex;flex-direction:column;gap:10px;">
-      <!-- Pipeline -->
-      <div class="pipeline">
-        <div class="pipe-agent" id="ppCritic"><div class="pipe-dot" style="--pipe-color:var(--critic)">🔍</div><div class="pipe-lbl">Critic</div></div>
-        <div class="pipe-arrow">→</div>
-        <div class="pipe-agent" id="ppEditor"><div class="pipe-dot" style="--pipe-color:var(--editor)">✍️</div><div class="pipe-lbl">Editor</div></div>
-        <div class="pipe-arrow">→</div>
-        <div class="pipe-agent" id="ppValidator"><div class="pipe-dot" style="--pipe-color:var(--validator)">✅</div><div class="pipe-lbl">Validator</div></div>
-        <div class="pipe-arrow">→</div>
-        <div class="pipe-agent" id="ppCoherence"><div class="pipe-dot" style="--pipe-color:var(--coherence)">🔗</div><div class="pipe-lbl">Coherence</div></div>
-        <div style="flex:1"></div>
-        <div id="ppStatus" style="font-size:12px;color:var(--muted)">待機中</div>
+      <!-- History -->
+      <div id="tabHistory" class="tab-panel tab-panel-fill">
+        <div class="hist-layout">
+          <div class="hist-timeline" id="histTimeline">
+            <div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">記事を選択してください</div>
+          </div>
+          <div class="hist-detail" id="histDetail">
+            <div class="hist-no-sel">← イテレーションを選んでください</div>
+          </div>
+        </div>
       </div>
+    </div>
+    </div><!-- /#contentPane -->
 
+    <!-- コンテンツ ↔ ボトム/サイドパネル リサイズハンドル (TB・LR 共用) -->
+    <div class="resize-split" id="splitHandle" title="ドラッグでサイズ変更 / ダブルクリックでリセット"></div>
+
+    <!-- Bottom/Right bar -->
+    <div id="bottomBar" style="background:var(--bg);padding:12px 18px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;flex-shrink:0;height:var(--bottom-h,320px);">
       <!-- Log -->
       <div class="agent-log">
         <div class="log-hdr" onclick="toggleLog()">
@@ -955,10 +1109,133 @@ function showSec(idx) {
 // ── Tabs ──────────────────────────────────────────────────────────
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
-  ['current','compare','all'].forEach(n=>{
+  ['current','compare','all','history'].forEach(n=>{
     const el=document.getElementById('tab'+n.charAt(0).toUpperCase()+n.slice(1));
     if(el) el.classList.toggle('active',n===name);
   });
+  if (name==='history' && S.article) loadIterations();
+}
+
+// ── サイドバー開閉 ────────────────────────────────────────────────
+function toggleSidebar() {
+  const sidebar   = document.querySelector('.sidebar');
+  const workspace = document.querySelector('.workspace');
+  const handle    = document.getElementById('sidebarHandle');
+  const btn       = document.getElementById('sidebarToggleBtn');
+  const isCollapsed = sidebar.classList.toggle('collapsed');
+
+  if (isCollapsed) {
+    // 現在の幅を保存してから折りたたみ
+    const sw = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w')) || 260;
+    sidebar.dataset.prevW = sw;
+    // ハンドル列(5px)を除き2列にする → main が 1fr をフルに使う
+    workspace.style.gridTemplateColumns = '40px 1fr';
+    handle.style.display = 'none';
+    btn.textContent = '▶'; btn.title = 'サイドバーを開く';
+  } else {
+    const prevW = parseInt(sidebar.dataset.prevW) || 260;
+    // 3列構成に戻す
+    workspace.style.gridTemplateColumns = prevW + 'px 5px 1fr';
+    document.documentElement.style.setProperty('--sidebar-w', prevW + 'px');
+    handle.style.display = '';
+    btn.textContent = '◀'; btn.title = 'サイドバーを閉じる';
+  }
+  localStorage.setItem('nrSidebarCollapsed', isCollapsed ? '1' : '0');
+}
+
+// ── 履歴・差分 ────────────────────────────────────────────────────
+let _iters = [];
+let _selIter = null;
+
+async function loadIterations() {
+  if (!S.article) return;
+  const data = await fetch(`/api/articles/${S.article}/iterations`).then(r=>r.json());
+  _iters = data;
+  renderHistTimeline(data);
+  // 選択中イテレーションを再描画
+  if (_selIter !== null) {
+    const h = data.find(x => x.iter === _selIter);
+    if (h) showIterDiff(h);
+  }
+}
+
+function renderHistTimeline(data) {
+  const el = document.getElementById('histTimeline');
+  el.innerHTML = '';
+  if (!data.length) {
+    el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">まだ履歴がありません</div>';
+    return;
+  }
+  [...data].reverse().forEach(h => {
+    const d = document.createElement('div');
+    d.className = 'hist-entry' + (h.iter===_selIter?' active':'');
+    d.dataset.iter = h.iter;
+    const icon = h.verdict==='pass'?'✅':'⚠️';
+    const sc = h.validation_score;
+    const scCol = sc>=80?'var(--green)':sc>=60?'var(--yellow)':'var(--red)';
+    const ts = new Date(h.timestamp).toLocaleDateString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    d.innerHTML=`
+      <div class="he-row">
+        <span class="he-num">#${String(h.iter).padStart(2,'0')}</span>
+        <span>${icon}</span>
+        <span style="font-family:monospace;font-size:11px;font-weight:700;color:${scCol}">${sc}</span>
+        <span style="font-size:10px;color:var(--muted);margin-left:auto">${ts}</span>
+      </div>
+      <div class="he-sec">${h.target_section||''}</div>
+      <div class="he-fb">${h.feedback_snippet||''}</div>`;
+    d.onclick = () => showIterDiff(h);
+    el.appendChild(d);
+  });
+}
+
+function showIterDiff(h) {
+  _selIter = h.iter;
+  document.querySelectorAll('.hist-entry').forEach(el =>
+    el.classList.toggle('active', parseInt(el.dataset.iter) === h.iter)
+  );
+
+  const ts = new Date(h.timestamp).toLocaleString('ja-JP');
+  const icon = h.verdict==='pass'?'✅':'⚠️';
+  const sc = h.validation_score;
+  const scCls = sc>=80?'score-green':sc>=60?'score-yellow':'score-red';
+
+  let diffHtml = '';
+  if (!h.after_content) {
+    diffHtml = '<div style="padding:20px;color:var(--muted);font-size:13px">💾 スナップショットファイルが見つかりません</div>';
+  } else if (!h.before_content) {
+    diffHtml = `
+      <div style="font-size:12px;color:var(--muted);padding:6px 0">📌 初回変更（比較元スナップショットなし）</div>
+      <div class="diff-panel" style="width:100%">
+        <div class="diff-hdr after">変更後 → iter #${String(h.iter).padStart(2,'0')}</div>
+        <div class="diff-body md">${marked.parse(h.after_content)}</div>
+      </div>`;
+  } else {
+    diffHtml = `
+      <div class="diff-grid">
+        <div class="diff-panel">
+          <div class="diff-hdr before">⬅ 変更前 (iter #${String(h.iter-1).padStart(2,'0')} 直後)</div>
+          <div class="diff-body md">${marked.parse(h.before_content)}</div>
+        </div>
+        <div class="diff-panel">
+          <div class="diff-hdr after">変更後 ➡ (iter #${String(h.iter).padStart(2,'0')})</div>
+          <div class="diff-body md">${marked.parse(h.after_content)}</div>
+        </div>
+      </div>`;
+  }
+
+  document.getElementById('histDetail').innerHTML = `
+    <div class="hist-diff-meta">
+      <div class="hist-diff-meta-row">
+        <span style="font-size:14px;font-weight:700">${icon} #${String(h.iter).padStart(2,'0')}</span>
+        <span style="color:var(--purple-light);font-size:13px">${h.target_section||''}</span>
+        <span class="score-num ${scCls}" style="font-size:15px;padding:2px 8px">${sc}点</span>
+        ${h.coherence_applied?'<span style="font-size:11px;color:var(--coherence)">🔗 整合性調整済</span>':''}
+        <span style="font-size:11px;color:var(--muted);margin-left:auto">${ts}</span>
+      </div>
+      ${h.feedback_snippet?`<div style="font-size:12px;color:var(--muted2);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">💬 フィードバック: ${h.feedback_snippet}</div>`:''}
+      ${h.critique_summary?`<div style="font-size:11px;color:var(--muted);margin-top:3px">📊 ${h.critique_summary}</div>`:''}
+    </div>
+    ${diffHtml}`;
 }
 
 // ── New Article ───────────────────────────────────────────────────
@@ -1115,9 +1392,177 @@ async function reloadArt() {
   S.sections=data.sections;
   renderSecList(data.sections); renderHist(data.state.history||[]); renderAll(data.all_content); updateSecSel(data.sections);
   await loadArticles();
+  // 履歴タブが開いていたら自動リフレッシュ
+  if (document.querySelector('.tab[data-tab="history"]')?.classList.contains('active')) {
+    await loadIterations();
+  }
 }
 
 init();
+
+// ── リサイズ可能パネル ────────────────────────────────────────────
+function initResizes() {
+  const LS_KEY = 'nrPanelSizes';
+  const saved = (() => { try { return JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch(e) { return {}; } })();
+  const DEFAULTS = { sidebarW: 260, bottomH: 320 };
+
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+  function saveSizes() {
+    const sw = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w')) || DEFAULTS.sidebarW;
+    const bar = document.getElementById('bottomBar');
+    const sizes = {
+      sidebarW: sw,
+      bottomH: saved.bottomH || DEFAULTS.bottomH,
+      panelW: saved.panelW || 380,
+    };
+    if (isLR()) sizes.panelW = bar.offsetWidth || sizes.panelW;
+    else sizes.bottomH = bar.offsetHeight || sizes.bottomH;
+    saved.sidebarW = sizes.sidebarW;
+    saved.bottomH = sizes.bottomH;
+    saved.panelW = sizes.panelW;
+    localStorage.setItem(LS_KEY, JSON.stringify(sizes));
+  }
+
+  // ── サイドバー幅 (水平) ──────────────────────────────────────────
+  function setSidebarW(w) {
+    document.documentElement.style.setProperty('--sidebar-w', w + 'px');
+    // グリッドテンプレートも同期（折りたたみ中でなければ）
+    if (!document.querySelector('.sidebar').classList.contains('collapsed')) {
+      document.querySelector('.workspace').style.gridTemplateColumns = w + 'px 5px 1fr';
+    }
+  }
+  setSidebarW(clamp(saved.sidebarW || DEFAULTS.sidebarW, 140, 520));
+
+  const shHandle = document.getElementById('sidebarHandle');
+  let sh = { active: false, startX: 0, startW: 0 };
+
+  shHandle.addEventListener('mousedown', (e) => {
+    sh.active = true;
+    sh.startX = e.clientX;
+    sh.startW = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w')) || DEFAULTS.sidebarW;
+    shHandle.classList.add('dragging');
+    document.body.classList.add('resizing-h');
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!sh.active) return;
+    setSidebarW(clamp(sh.startW + (e.clientX - sh.startX), 140, 520));
+  });
+  document.addEventListener('mouseup', () => {
+    if (!sh.active) return;
+    sh.active = false;
+    shHandle.classList.remove('dragging');
+    document.body.classList.remove('resizing-h');
+    saveSizes();
+  });
+  shHandle.addEventListener('dblclick', () => { setSidebarW(DEFAULTS.sidebarW); saveSizes(); });
+
+  // ── スプリットハンドル (TB・LR 両用) ─────────────────────────────
+  function isLR() { return document.getElementById('artView').classList.contains('layout-lr'); }
+
+  function setSplitSize(size) {
+    const bar = document.getElementById('bottomBar');
+    if (isLR()) { bar.style.width = size + 'px'; bar.style.height = ''; }
+    else         { bar.style.height = size + 'px'; bar.style.width = ''; }
+  }
+  function getSplitSize() {
+    const bar = document.getElementById('bottomBar');
+    return isLR() ? bar.offsetWidth : bar.offsetHeight;
+  }
+  function splitMin() { return isLR() ? 240 : 160; }
+  function splitMax() { return isLR() ? 720 : 640; }
+  function splitDefault() { return isLR() ? (saved.panelW || 380) : (saved.bottomH || DEFAULTS.bottomH); }
+
+  function syncLayoutButton() {
+    const btn = document.getElementById('btnLayout');
+    if (!btn) return;
+    const lr = isLR();
+    btn.classList.toggle('active', lr);
+    btn.textContent = lr ? '⬛ 左右' : '⬛ 上下';
+    btn.title = lr ? '左右分割レイアウトを使用中' : '上下分割レイアウトを使用中';
+  }
+
+  function applyTB(height) {
+    const artView = document.getElementById('artView');
+    const bar = document.getElementById('bottomBar');
+    artView.classList.remove('layout-lr');
+    bar.style.width = '';
+    setSplitSize(clamp(height || saved.bottomH || DEFAULTS.bottomH, 160, 640));
+    localStorage.setItem('nrLayout', 'tb');
+    syncLayoutButton();
+  }
+
+  function applyLR(width) {
+    const artView = document.getElementById('artView');
+    const bar = document.getElementById('bottomBar');
+    artView.classList.add('layout-lr');
+    bar.style.height = '';
+    setSplitSize(clamp(width || saved.panelW || 380, 240, 720));
+    localStorage.setItem('nrLayout', 'lr');
+    syncLayoutButton();
+  }
+
+  window.toggleLayout = function toggleLayout() {
+    if (isLR()) applyTB(saved.bottomH || DEFAULTS.bottomH);
+    else applyLR(saved.panelW || 380);
+    saveSizes();
+  };
+
+  window._applyLR = applyLR;
+
+  setSplitSize(clamp(saved.bottomH || DEFAULTS.bottomH, 160, 640));
+  syncLayoutButton();
+
+  const splitHandle = document.getElementById('splitHandle');
+  let sp = { active: false, startPos: 0, startSize: 0, lr: false };
+
+  splitHandle.addEventListener('mousedown', (e) => {
+    sp.active = true; sp.lr = isLR();
+    sp.startPos  = sp.lr ? e.clientX : e.clientY;
+    sp.startSize = getSplitSize();
+    splitHandle.classList.add('dragging');
+    document.body.classList.add(sp.lr ? 'rs-h' : 'rs-v');
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!sp.active) return;
+    const delta = sp.lr ? (sp.startPos - e.clientX) : (sp.startPos - e.clientY);
+    setSplitSize(clamp(sp.startSize + delta, splitMin(), splitMax()));
+  });
+  document.addEventListener('mouseup', () => {
+    if (!sp.active) return;
+    sp.active = false;
+    splitHandle.classList.remove('dragging');
+    document.body.classList.remove('rs-h', 'rs-v');
+    // サイズを保存キーに応じて振り分け
+    const bar = document.getElementById('bottomBar');
+    if (isLR()) saved.panelW  = bar.offsetWidth;
+    else        saved.bottomH = bar.offsetHeight;
+    saveSizes();
+  });
+  splitHandle.addEventListener('dblclick', () => { setSplitSize(splitDefault()); saveSizes(); });
+
+  // ── レイアウト復元 ───────────────────────────────────────────────
+  if (localStorage.getItem('nrLayout') === 'lr') {
+    applyLR(saved.panelW || 380);
+  }
+
+  // ── サイドバー折りたたみ状態の復元 ──────────────────────────────
+  if (localStorage.getItem('nrSidebarCollapsed') === '1') {
+    const sidebar   = document.querySelector('.sidebar');
+    const workspace = document.querySelector('.workspace');
+    const handle    = document.getElementById('sidebarHandle');
+    const btn       = document.getElementById('sidebarToggleBtn');
+    sidebar.dataset.prevW = clamp(saved.sidebarW || DEFAULTS.sidebarW, 140, 520);
+    sidebar.classList.add('collapsed');
+    workspace.style.gridTemplateColumns = '40px 1fr';
+    handle.style.display = 'none';
+    btn.textContent = '▶'; btn.title = 'サイドバーを開く';
+  }
+}
+
+initResizes();
 
 // ── 音声入力 (MediaRecorder + Whisper) ───────────────────────────
 let _mediaRecorder = null;
