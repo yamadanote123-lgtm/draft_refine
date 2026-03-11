@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo $HOME)",
+      "Read(//c//**)",
+      "Bash(dir)",
+      "Bash(cd \"C:/Users/kohei/OneDrive/デスクトップ/note/article_elaborate/note-refine\" && python -c \"import ast; ast.parse\\(open\\('section_manager.py', encoding='utf-8'\\).read\\(\\)\\); print\\('section_manager.py: OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('orchestrator.py', encoding='utf-8'\\).read\\(\\)\\); print\\('orchestrator.py: OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('transcribe.py', encoding='utf-8'\\).read\\(\\)\\); print\\('transcribe.py: OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('agents/critic.py', encoding='utf-8'\\).read\\(\\)\\); print\\('critic.py: OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('agents/editor.py', encoding='utf-8'\\).read\\(\\)\\); print\\('editor.py: OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('agents/validator.py', encoding='utf-8'\\).read\\(\\)\\); print\\('validator.py: OK'\\)\" && python -c \"import ast; ast.parse\\(open\\('agents/coherence.py', encoding='utf-8'\\).read\\(\\)\\); print\\('coherence.py: OK'\\)\")",
+      "Bash(cd \"C:\\\\Users\\\\kohei\\\\OneDrive\\\\デスクトップ\\\\note\\\\article_elaborate\\\\note-refine\" && python orchestrator.py --list drafts/sample_article/)",
+      "Bash(cd \"C:\\\\Users\\\\kohei\\\\OneDrive\\\\デスクトップ\\\\note\\\\article_elaborate\\\\note-refine\" && python orchestrator.py --list drafts/sample_article/ 2>&1)",
+      "Bash(powershell -Command \"cd 'C:\\\\Users\\\\kohei\\\\OneDrive\\\\デスクトップ\\\\note\\\\article_elaborate\\\\note-refine'; python orchestrator.py --list drafts/sample_article/ 2>&1\")",
+      "Bash(powershell -Command \"Set-Location 'C:\\\\Users\\\\kohei\\\\OneDrive\\\\デスクトップ\\\\note\\\\article_elaborate\\\\note-refine'; python orchestrator.py --help 2>&1; echo 'exit:' $LASTEXITCODE\")",
+      "Bash(cmd /c \"cd /d \\\\\"C:\\\\Users\\\\kohei\\\\OneDrive\\\\デスクトップ\\\\note\\\\article_elaborate\\\\note-refine\\\\\" && python orchestrator.py --list drafts/sample_article/ 2>&1\")",
+      "Bash(cmd /c \"python --version 2>&1\")"
+    ]
+  }
+}
