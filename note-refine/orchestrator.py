@@ -1,43 +1,94 @@
-import sys
-import os
 import argparse
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from llm_client import get_client
-
 from section_manager import (
-    get_article_dir, list_sections, read_section, write_section,
-    find_section_by_name, write_all, read_all, split_markdown_to_sections,
-    save_section_iteration, load_state, save_state, append_history,
-    print_section_list, build_all
+    append_history,
+    build_all,
+    find_section_by_name,
+    get_article_dir,
+    list_sections,
+    load_state,
+    print_section_list,
+    read_section,
+    save_section_iteration,
+    save_state,
+    split_markdown_to_sections,
+    write_all,
+    write_section,
 )
+
+
+def parse_section_args(raw_sections) -> list[str]:
+    if not raw_sections:
+        return []
+
+    names: list[str] = []
+    for raw in raw_sections:
+        for part in raw.split(","):
+            name = part.strip()
+            if name:
+                names.append(name)
+    return names
+
+
+def resolve_target_sections(article_dir: Path, sections: list[dict], raw_sections) -> list[dict]:
+    requested = parse_section_args(raw_sections)
+    if not requested:
+        return []
+
+    resolved: list[dict] = []
+    seen = set()
+    for name in requested:
+        section = find_section_by_name(article_dir, name)
+        if not section:
+            print(f"ERROR: section not found: {name}")
+            print("Available sections:")
+            for s in sections:
+                print(f"  {s['filename']}")
+            sys.exit(1)
+        if section["filename"] not in seen:
+            resolved.append(section)
+            seen.add(section["filename"])
+    return resolved
+
+
 def cmd_setup(args):
     source = Path(args.setup)
     if not source.exists():
-        print(f"❌ ファイルが見つかりません: {source}")
+        print(f"ERROR: source markdown not found: {source}")
         sys.exit(1)
     if source.is_dir():
-        print(f"❌ ディレクトリではなく .md ファイルを指定してください: {source}")
-        print(f"例: python orchestrator.py --setup my_article.md")
+        print(f"ERROR: expected a .md file, got a directory: {source}")
+        print("Usage: python orchestrator.py --setup my_article.md")
         sys.exit(1)
     if source.suffix.lower() != ".md":
-        print(f"❌ .md ファイルを指定してください: {source}")
+        print(f"ERROR: expected a .md file: {source}")
         sys.exit(1)
+    if source.stat().st_size == 0:
+        print(f"ERROR: source markdown is empty: {source}")
+        sys.exit(1)
+
     article_dir = get_article_dir(source)
     article_dir.mkdir(parents=True, exist_ok=True)
     sections = split_markdown_to_sections(source, article_dir)
-    print(f"✅ セクション分割完了: {article_dir}")
-    print(f"  {len(sections)} セクション生成")
+    print(f"Section split completed: {article_dir}")
+    print(f"  {len(sections)} sections generated")
     print_section_list(article_dir)
 
 
 def cmd_list(args):
     article_dir = Path(args.list)
     if not article_dir.exists():
-        print(f"❌ ディレクトリが見つかりません: {article_dir}")
-        print("まず --setup でセットアップしてください。")
+        print(f"ERROR: article directory not found: {article_dir}")
+        print("Run --setup first.")
         sys.exit(1)
 
     state = load_state(article_dir)
@@ -45,98 +96,76 @@ def cmd_list(args):
 
     history = state.get("history", [])
     if history:
-        print("\n📊 イテレーション履歴:")
+        print("\nIteration history:")
         for h in history:
-            verdict_icon = "✅" if h.get("verdict") == "pass" else "⚠️ "
-            coherence_icon = "🔗" if h.get("coherence_applied") else "  "
+            verdict_icon = "OK" if h.get("verdict") == "pass" else "NG"
+            coherence_icon = "LINK" if h.get("coherence_applied") else "--"
             score = h.get("validation_score", "-")
-            section = h.get("target_section", "不明")
+            section = h.get("target_section", "unknown")
             summary = h.get("critique_summary", "")[:40]
             iter_num = h.get("iter", "?")
-            print(f"  #{iter_num:02d} {verdict_icon}{coherence_icon} [{section}] スコア: {score} | {summary}")
+            print(f"  #{iter_num:02d} {verdict_icon} {coherence_icon} [{section}] score={score} | {summary}")
 
 
 def cmd_refine(args):
     article_dir = Path(args.article)
     if not article_dir.exists():
-        print(f"❌ ディレクトリが見つかりません: {article_dir}")
-        print("まず --setup でセットアップしてください。")
+        print(f"ERROR: article directory not found: {article_dir}")
+        print("Run --setup first.")
         sys.exit(1)
 
-    # audio/ ディレクトリ自動作成
     audio_dir = Path(__file__).parent / "audio"
     audio_dir.mkdir(exist_ok=True)
 
     client = get_client()
-
-    from agents import critic, editor, validator, coherence
+    from agents import coherence, critic, editor, validator
 
     state = load_state(article_dir)
     iter_num = state.get("iteration", 0) + 1
 
     sections = list_sections(article_dir)
     if not sections:
-        print(f"❌ セクションファイルが見つかりません: {article_dir}")
+        print(f"ERROR: no section files found: {article_dir}")
         sys.exit(1)
 
-    # セクション内容を読み込む
     sections_content = {s["filename"]: read_section(s) for s in sections}
 
-    # 対象セクションのヒント
-    target_hint = None
-    target_section_dict = None
-    if args.section:
-        target_section_dict = find_section_by_name(article_dir, args.section)
-        if not target_section_dict:
-            print(f"❌ セクションが見つかりません: {args.section}")
-            print("利用可能なセクション:")
-            for s in sections:
-                print(f"  {s['filename']}")
-            sys.exit(1)
-        target_hint = target_section_dict["filename"]
+    requested_sections = resolve_target_sections(article_dir, sections, args.section)
+    target_hint = ", ".join(s["filename"] for s in requested_sections) if requested_sections else None
 
-    # ヘッダー表示
     article_name = article_dir.name
-    target_display = target_hint if target_hint else "（CriticAgentが判断）"
+    target_display = target_hint if target_hint else "auto"
     print("=" * 65)
-    print(f"  📝 note記事リファインシステム")
-    print(f"  記事: {article_name} | イテレーション #{iter_num}")
-    print(f"  🎯 対象セクション: {target_display}")
+    print("  note article refine")
+    print(f"  article: {article_name} | iteration #{iter_num}")
+    print(f"  target section: {target_display}")
     print("=" * 65)
 
-    # 履歴表示
     history = state.get("history", [])
     if history:
-        print("\n📊 イテレーション履歴:")
+        print("\nIteration history:")
         for h in history:
-            verdict_icon = "✅" if h.get("verdict") == "pass" else "⚠️ "
-            coherence_icon = "🔗" if h.get("coherence_applied") else "  "
+            verdict_icon = "OK" if h.get("verdict") == "pass" else "NG"
+            coherence_icon = "LINK" if h.get("coherence_applied") else "--"
             score = h.get("validation_score", "-")
-            section = h.get("target_section", "不明")
+            section = h.get("target_section", "unknown")
             summary = h.get("critique_summary", "")[:40]
             h_iter = h.get("iter", "?")
-            print(f"  #{h_iter:02d} {verdict_icon}{coherence_icon} [{section}] スコア: {score} | {summary}")
+            print(f"  #{h_iter:02d} {verdict_icon} {coherence_icon} [{section}] score={score} | {summary}")
         print()
 
-    # セクション一覧表示
     print_section_list(article_dir)
     print()
 
-    # フィードバック取得
     if args.text_feedback:
         feedback = args.text_feedback
-        print(f"📝 テキストフィードバック: {feedback[:80]}...")
+        print(f"Text feedback: {feedback[:80]}...")
     else:
-        # sox チェック
-        import shutil
         if shutil.which("sox"):
-            import tempfile
-            import subprocess
-            timestamp = __import__("datetime").datetime.now().strftime("%H%M%S")
-            # ffmpegが日本語パスを読めないため、ASCIIのみのtempディレクトリに保存
+            timestamp = datetime.now().strftime("%H%M%S")
             temp_dir = Path(tempfile.gettempdir())
             audio_path = str(temp_dir / f"feedback_{timestamp}.wav")
-            print(f"🎙️  録音中... Enterキーで停止")
+            print("Recording... press Enter to stop")
             proc = subprocess.Popen(
                 ["sox", "-t", "waveaudio", "default", "-r", "16000", "-c", "1", audio_path],
                 stderr=subprocess.PIPE
@@ -148,97 +177,108 @@ def cmd_refine(args):
 
             wav = Path(audio_path)
             if not wav.exists() or wav.stat().st_size == 0:
-                print(f"❌ 録音失敗。sox エラー: {sox_err.strip()}")
-                print("ℹ️  テキストでフィードバックを入力してください。")
-                feedback = input("フィードバック > ").strip()
+                print(f"ERROR: recording failed. sox error: {sox_err.strip()}")
+                print("Falling back to text feedback.")
+                feedback = input("Feedback > ").strip()
             else:
-                print(f"✅ 録音完了: {audio_path}")
+                print(f"Recording saved: {audio_path}")
                 from transcribe import transcribe
                 feedback = transcribe(audio_path)
         else:
-            print("ℹ️  Sox が見つかりません。テキストでフィードバックを入力してください。")
-            feedback = input("フィードバック > ").strip()
+            print("sox was not found. Falling back to text feedback.")
+            feedback = input("Feedback > ").strip()
 
-    # CriticAgent
-    critique = critic.run(sections_content, feedback, target_hint, client)
-
-    # 対象セクション確定
-    critic_target = critique.get("target_section")
-    if critic_target:
-        target_section_dict = find_section_by_name(article_dir, critic_target)
-
-    if not target_section_dict:
-        print("\n❓ 対象セクションを選択してください:")
-        for i, s in enumerate(sections):
-            print(f"  [{i+1}] {s['filename']}")
-        choice = input("番号を入力 > ").strip()
-        try:
-            idx = int(choice) - 1
-            target_section_dict = sections[idx]
-        except (ValueError, IndexError):
-            print("❌ 無効な選択です。")
-            sys.exit(1)
-
-    target_name = target_section_dict["filename"]
-    target_content = sections_content[target_name]
-
-    print(f"\n🎯 対象セクション確定: {target_name}")
-
-    # EditorAgent
-    improved = editor.run(target_name, target_content, sections_content, critique, client)
-
-    # ValidatorAgent
-    validation_result = {"verdict": "pass", "score": 100, "coherence_risk": "low", "recommendation": ""}
-    if not args.skip_validation:
-        validation_result = validator.run(target_name, target_content, feedback, improved, critique, client)
+    if requested_sections:
+        target_sections = requested_sections
     else:
-        print("⏭️  ValidatorAgent をスキップ")
+        critique = critic.run(sections_content, feedback, target_hint, client)
+        target_section_dict = None
+        critic_target = critique.get("target_section")
+        if critic_target:
+            target_section_dict = find_section_by_name(article_dir, critic_target)
 
-    # セクション保存
-    write_section(target_section_dict, improved)
-    save_section_iteration(article_dir, target_section_dict, improved, iter_num)
-    print(f"\n💾 {target_name} を保存しました。")
+        if not target_section_dict:
+            print("\nChoose target section:")
+            for i, s in enumerate(sections):
+                print(f"  [{i + 1}] {s['filename']}")
+            choice = input("Number > ").strip()
+            try:
+                idx = int(choice) - 1
+                target_section_dict = sections[idx]
+            except (ValueError, IndexError):
+                print("ERROR: invalid selection.")
+                sys.exit(1)
+        target_sections = [target_section_dict]
 
-    # CoherenceAgent
-    updated_sections_content = {**sections_content, target_name: improved}
+    updated_names: list[str] = []
+    last_improved = ""
     coherence_applied = False
+
+    for offset, target_section_dict in enumerate(target_sections):
+        target_name = target_section_dict["filename"]
+        target_content = sections_content[target_name]
+        current_iter = iter_num + offset
+        current_hint = target_name
+
+        print(f"\nTarget section selected: {target_name}")
+        critique = critic.run(sections_content, feedback, current_hint, client)
+
+        improved = editor.run(target_name, target_content, sections_content, critique, client)
+
+        validation_result = {"verdict": "pass", "score": 100, "coherence_risk": "low", "recommendation": ""}
+        if not args.skip_validation:
+            validation_result = validator.run(target_name, target_content, feedback, improved, critique, client)
+        else:
+            print("Validator skipped.")
+
+        write_section(target_section_dict, improved)
+        save_section_iteration(article_dir, target_section_dict, improved, current_iter)
+        print(f"\nSaved: {target_name}")
+
+        sections_content[target_name] = improved
+        updated_names.append(target_name)
+        last_improved = improved
+
+        verdict = validation_result.get("verdict", "pass")
+        score = validation_result.get("score", 100)
+        critique_summary = critique.get("summary", "")
+
+        append_history(
+            state, current_iter, target_name, feedback,
+            critique_summary, score, verdict, False
+        )
 
     if args.skip_coherence:
         write_all(article_dir)
-        print("⏭️  CoherenceAgent をスキップ（単純結合）")
+        print("Coherence skipped. all.md regenerated from section files.")
     else:
-        all_text, coherence_report = coherence.run(updated_sections_content, target_name, client)
+        last_target = updated_names[-1] if updated_names else ""
+        all_text, _coherence_report = coherence.run(sections_content, last_target, client)
         all_path = article_dir / "all.md"
         all_path.write_text(all_text, encoding="utf-8")
         coherence_applied = True
-        print(f"💾 all.md を更新しました。")
+        print("Updated: all.md")
 
-    # 状態保存
-    verdict = validation_result.get("verdict", "pass")
-    score = validation_result.get("score", 100)
-    critique_summary = critique.get("summary", "")
+    if updated_names:
+        for entry in state["history"][-len(updated_names):]:
+            entry["coherence_applied"] = coherence_applied
 
-    append_history(
-        state, iter_num, target_name, feedback,
-        critique_summary, score, verdict, coherence_applied
-    )
     save_state(article_dir, state)
 
-    # 改善後表示
     print("\n" + "=" * 65)
-    print(f"  ✅ イテレーション #{iter_num} 完了")
+    print(f"  {len(updated_names)} section(s) updated")
     print("=" * 65)
-    print(f"\n改善後の {target_name}:\n")
-    print(improved[:500] + ("..." if len(improved) > 500 else ""))
-    print(f"\n次のアクション:")
-    print(f"  python orchestrator.py --article {article_dir}  （次のイテレーション）")
-    print(f"  python orchestrator.py --list {article_dir}     （履歴確認）")
+    print(f"\nUpdated sections: {', '.join(updated_names)}\n")
+    print(last_improved[:500] + ("..." if len(last_improved) > 500 else ""))
+    print("\nNext commands:")
+    print(f"  python orchestrator.py --article {article_dir}")
+    print(f"  python orchestrator.py --list {article_dir}")
 
 
 def cmd_coherence_only(args):
     article_dir = Path(args.article)
     if not article_dir.exists():
-        print(f"❌ ディレクトリが見つかりません: {article_dir}")
+        print(f"ERROR: article directory not found: {article_dir}")
         sys.exit(1)
 
     client = get_client()
@@ -247,22 +287,23 @@ def cmd_coherence_only(args):
     sections = list_sections(article_dir)
     sections_content = {s["filename"]: read_section(s) for s in sections}
 
-    all_text, report = coherence.run(sections_content, "", client)
+    all_text, _report = coherence.run(sections_content, "", client)
     all_path = article_dir / "all.md"
     all_path.write_text(all_text, encoding="utf-8")
-    print(f"✅ all.md を更新しました。")
+    print("Updated: all.md")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="note記事リファインシステム")
-    parser.add_argument("--setup", metavar="SOURCE_MD", help="単一mdをセクション分割してディレクトリを初期化")
-    parser.add_argument("--list", metavar="ARTICLE_DIR", help="セクション一覧とイテレーション履歴を表示")
-    parser.add_argument("--article", metavar="ARTICLE_DIR", help="メインのリファインループを実行")
-    parser.add_argument("--section", metavar="NAME", help="対象セクション名")
-    parser.add_argument("--text-feedback", metavar="TEXT", help="テキストでフィードバック（音声録音をスキップ）")
-    parser.add_argument("--skip-validation", action="store_true", help="Validatorをスキップ")
-    parser.add_argument("--skip-coherence", action="store_true", help="CoherenceAgentをスキップしてall.mdを単純結合")
-    parser.add_argument("--coherence-only", action="store_true", help="CoherenceAgentのみ実行してall.mdを更新")
+    parser = argparse.ArgumentParser(description="note article refine system")
+    parser.add_argument("--setup", metavar="SOURCE_MD", help="split one markdown into section files")
+    parser.add_argument("--list", metavar="ARTICLE_DIR", help="show section list and iteration history")
+    parser.add_argument("--article", metavar="ARTICLE_DIR", help="run the refine loop")
+    parser.add_argument("--section", metavar="NAME", action="append",
+                        help="target section name; repeat or use comma-separated values")
+    parser.add_argument("--text-feedback", metavar="TEXT", help="use text feedback instead of recording audio")
+    parser.add_argument("--skip-validation", action="store_true", help="skip Validator")
+    parser.add_argument("--skip-coherence", action="store_true", help="skip CoherenceAgent and only regenerate all.md")
+    parser.add_argument("--coherence-only", action="store_true", help="run only CoherenceAgent and rewrite all.md")
 
     args = parser.parse_args()
 

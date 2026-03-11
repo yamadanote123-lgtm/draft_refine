@@ -11,6 +11,7 @@ import threading
 import queue
 import uuid
 import os
+import errno
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
@@ -413,6 +414,23 @@ def make_app():
         (r"/api/jobs/([^/]+)/stream",       StreamHandler),
         (r"/api/transcribe",                TranscribeHandler),
     ])
+
+
+def _listen_with_fallback(app: tornado.web.Application, preferred_port: int, max_attempts: int = 20) -> int:
+    port = preferred_port
+    for _ in range(max_attempts):
+        try:
+            app.listen(port)
+            return port
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 10048 or exc.errno == errno.EADDRINUSE:
+                port += 1
+                continue
+            raise
+
+    raise RuntimeError(
+        f"ポート {preferred_port} から {port - 1} まで使用中のため起動できませんでした。"
+    )
 
 
 # ── HTML テンプレート ─────────────────────────────────────────────
@@ -1205,10 +1223,12 @@ function setMicStatus(text, cls) {
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 5001))
     app = make_app()
-    app.listen(PORT)
+    actual_port = _listen_with_fallback(app, PORT)
     print("=" * 60)
     print("  📝 note-refine Web UI")
-    print(f"  URL: http://localhost:{PORT}")
+    print(f"  URL: http://localhost:{actual_port}")
+    if actual_port != PORT:
+        print(f"  注記: PORT={PORT} は使用中だったため {actual_port} で起動しました")
     print("  停止: Ctrl+C")
     print("=" * 60)
     try:
