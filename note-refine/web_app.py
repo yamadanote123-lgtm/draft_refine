@@ -211,6 +211,10 @@ class RefineHandler(BaseHandler):
         if not feedback:
             return self.err("フィードバックを入力してください")
         section_hint = data.get("section") or None
+        section_hints = data.get("sections") or []
+        if not isinstance(section_hints, list):
+            section_hints = []
+        section_hints = [str(s).strip() for s in section_hints if str(s).strip()]
         skip_validation = bool(data.get("skip_validation", False))
         skip_coherence  = bool(data.get("skip_coherence", False))
 
@@ -222,67 +226,110 @@ class RefineHandler(BaseHandler):
 
             sections = list_sections(article_dir)
             sections_content = {s["filename"]: read_section(s) for s in sections}
+            selected_targets = []
+            for hint in section_hints:
+                sec = find_section_by_name(article_dir, hint)
+                if sec and not any(existing["filename"] == sec["filename"] for existing in selected_targets):
+                    selected_targets.append(sec)
 
-            target_hint = None
-            target_section_dict = None
-            if section_hint:
+            if not selected_targets and section_hint:
                 target_section_dict = find_section_by_name(article_dir, section_hint)
                 if target_section_dict:
-                    target_hint = target_section_dict["filename"]
+                    selected_targets.append(target_section_dict)
 
-            # Critic
-            q.put({"type": "phase", "phase": "critic", "label": "CriticAgent"})
-            critique = critic.run(sections_content, feedback, target_hint, client)
-            q.put({"type": "critique", "data": critique})
+            target_names = [s["filename"] for s in selected_targets]
+            updated = dict(sections_content)
+            results = []
 
-            critic_target = critique.get("target_section")
-            if critic_target and not target_section_dict:
-                target_section_dict = find_section_by_name(article_dir, critic_target)
-            if not target_section_dict and sections:
-                target_section_dict = sections[0]
-
-            target_name = target_section_dict["filename"]
-            target_content = sections_content[target_name]
-            q.put({"type": "target", "section": target_name})
-
-            # Editor
-            q.put({"type": "phase", "phase": "editor", "label": "EditorAgent"})
-            improved = editor.run(target_name, target_content, sections_content, critique, client)
-            q.put({"type": "editor_result", "original": target_content, "improved": improved, "section": target_name})
-
-            # Validator
-            validation_result = {"verdict": "pass", "score": 100, "coherence_risk": "low", "recommendation": ""}
-            if not skip_validation:
-                q.put({"type": "phase", "phase": "validator", "label": "ValidatorAgent"})
-                validation_result = validator.run(target_name, target_content, feedback, improved, critique, client)
-                q.put({"type": "validation", "data": validation_result})
+            if target_names:
+                q.put({"type": "log", "text": f"🧩 明示指定: {len(target_names)} セクション"})
             else:
-                q.put({"type": "log", "text": "⏭️  ValidatorAgent をスキップ"})
+                q.put({"type": "log", "text": "🧩 対象セクションは自動判定"})
 
-            write_section(target_section_dict, improved)
-            save_section_iteration(article_dir, target_section_dict, improved, iter_num)
-            q.put({"type": "log", "text": f"💾 {target_name} を保存しました"})
+            for idx, target_section_dict in enumerate(selected_targets or [None], start=1):
+                target_hint = target_section_dict["filename"] if target_section_dict else None
+
+                # Critic
+                q.put({"type": "phase", "phase": "critic", "label": "CriticAgent"})
+                critique = critic.run(updated, feedback, target_hint, client)
+                q.put({"type": "critique", "data": critique})
+
+                resolved_target = target_section_dict
+                critic_target = critique.get("target_section")
+                if critic_target and not resolved_target:
+                    resolved_target = find_section_by_name(article_dir, critic_target)
+                if not resolved_target and sections:
+                    resolved_target = sections[0]
+
+                target_name = resolved_target["filename"]
+                target_content = updated[target_name]
+                progress = f" ({idx}/{len(selected_targets)})" if selected_targets else ""
+                q.put({"type": "target", "section": target_name, "progress": progress})
+
+                # Editor
+                q.put({"type": "phase", "phase": "editor", "label": "EditorAgent"})
+                improved = editor.run(target_name, target_content, updated, critique, client)
+                q.put({"type": "editor_result", "original": target_content, "improved": improved, "section": target_name, "progress": progress})
+
+                # Validator
+                validation_result = {"verdict": "pass", "score": 100, "coherence_risk": "low", "recommendation": ""}
+                if not skip_validation:
+                    q.put({"type": "phase", "phase": "validator", "label": "ValidatorAgent"})
+                    validation_result = validator.run(target_name, target_content, feedback, improved, critique, client)
+                    q.put({"type": "validation", "data": validation_result})
+                else:
+                    q.put({"type": "log", "text": "⏭️  ValidatorAgent をスキップ"})
+
+                current_iter = iter_num + idx - 1
+                write_section(resolved_target, improved)
+                save_section_iteration(article_dir, resolved_target, improved, current_iter)
+                q.put({"type": "log", "text": f"💾 {target_name} を保存しました"})
+
+                updated[target_name] = improved
+                verdict = validation_result.get("verdict", "pass")
+                score = validation_result.get("score", 100)
+                append_history(state, current_iter, target_name, feedback, critique.get("summary",""), score, verdict, False)
+                results.append({
+                    "iter": current_iter,
+                    "target": target_name,
+                    "score": score,
+                    "verdict": verdict,
+                    "original": target_content,
+                    "improved": improved,
+                })
 
             # Coherence
-            updated = {**sections_content, target_name: improved}
             coherence_applied = False
             if skip_coherence:
                 write_all(article_dir)
                 q.put({"type": "log", "text": "⏭️  CoherenceAgent をスキップ"})
             else:
                 q.put({"type": "phase", "phase": "coherence", "label": "CoherenceAgent"})
-                all_text, coherence_report = coherence.run(updated, target_name, client)
+                coherence_target = results[-1]["target"] if results else ""
+                all_text, coherence_report = coherence.run(updated, coherence_target, client)
                 (article_dir / "all.md").write_text(all_text, encoding="utf-8")
                 coherence_applied = True
                 q.put({"type": "coherence_result", "report": coherence_report})
 
-            verdict = validation_result.get("verdict", "pass")
-            score   = validation_result.get("score", 100)
-            append_history(state, iter_num, target_name, feedback, critique.get("summary",""), score, verdict, coherence_applied)
+            if coherence_applied:
+                for entry in state.get("history", []):
+                    if entry.get("iter", 0) >= iter_num:
+                        entry["coherence_applied"] = True
             save_state(article_dir, state)
 
-            result = {"iter": iter_num, "target": target_name, "score": score, "verdict": verdict,
-                      "original": target_content, "improved": improved}
+            if not results:
+                result = {"message": "対象セクションが見つかりませんでした"}
+            elif len(results) == 1:
+                result = results[0]
+            else:
+                scores = [r["score"] for r in results]
+                result = {
+                    "iter": results[-1]["iter"],
+                    "targets": [r["target"] for r in results],
+                    "score": round(sum(scores) / len(scores)),
+                    "verdict": "pass" if all(r["verdict"] == "pass" for r in results) else "needs_revision",
+                    "message": f"{len(results)} セクションのリファインが完了",
+                }
             q.put({"type": "complete", **result})
             jobs[_current_job_id]["result"] = result
 
@@ -565,6 +612,10 @@ body.resizing-v * { cursor: row-resize !important; user-select: none !important;
 .sidebar-scroll::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
 select { width: 100%; background: var(--surface3); border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: var(--radius); font-size: 13px; cursor: pointer; outline: none; }
 select:focus { border-color: var(--purple); }
+select[multiple] { min-height: 120px; padding: 6px; }
+select[multiple] option { padding: 6px 8px; border-radius: 4px; }
+select[multiple] option:checked { background: color-mix(in srgb, var(--purple) 22%, var(--surface2)); color: var(--text); }
+.field-help { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .art-actions { display: flex; gap: 6px; margin-top: 8px; }
 .btn-sm { flex: 1; padding: 6px; background: var(--surface3); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius); cursor: pointer; font-size: 12px; font-weight: 500; text-align: center; transition: all .15s; }
 .btn-sm:hover { background: var(--surface2); border-color: var(--purple); color: var(--purple-light); }
@@ -947,7 +998,8 @@ input[type=text]:focus, input[type=password]:focus { border-color: var(--purple)
         <div class="form-row">
           <div class="fg" style="flex:1;min-width:140px;">
             <label>対象セクション</label>
-            <select id="secSel" style="width:100%"><option value="">自動（CriticAgentが判断）</option></select>
+            <select id="secSel" style="width:100%" multiple></select>
+            <div class="field-help">未選択なら自動判定。複数選択する場合は `Cmd` / `Ctrl` クリック。</div>
           </div>
           <div class="fg">
             <label style="opacity:0">.</label>
@@ -1095,8 +1147,14 @@ function renderHist(history) {
 function renderAll(content) { document.getElementById('allMd').innerHTML=marked.parse(content||''); }
 function updateSecSel(secs) {
   const sel=document.getElementById('secSel');
-  sel.innerHTML='<option value="">自動（CriticAgentが判断）</option>';
+  sel.innerHTML='';
   secs.forEach(s=>{ const o=document.createElement('option'); o.value=s.filename; o.textContent=s.filename; sel.appendChild(o); });
+  sel.size=Math.min(Math.max(secs.length, 4), 10);
+}
+
+function getSelectedSections() {
+  const sel=document.getElementById('secSel');
+  return Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean);
 }
 
 function showSec(idx) {
@@ -1298,9 +1356,10 @@ async function runRefine() {
   if (S.running) return;
   const fb=document.getElementById('fbInput').value.trim();
   if (!fb) { alert('フィードバックを入力してください'); return; }
+  const selectedSections=getSelectedSections();
   setRunning(true); clearLog(); resetPipeline(); clearCmp();
-  addLog('🚀 リファイン開始...');
-  const res=await fetch(`/api/articles/${S.article}/refine`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({feedback:fb,section:document.getElementById('secSel').value||null,skip_validation:document.getElementById('skipVal').checked,skip_coherence:document.getElementById('skipCoh').checked})});
+  addLog(`🚀 リファイン開始...${selectedSections.length?` (${selectedSections.length} セクション)`:' (対象自動判定)'}`);
+  const res=await fetch(`/api/articles/${S.article}/refine`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({feedback:fb,section:selectedSections[0]||null,sections:selectedSections,skip_validation:document.getElementById('skipVal').checked,skip_coherence:document.getElementById('skipCoh').checked})});
   if (!res.ok) { const e=await res.json(); addLog('❌ '+(e.error||'エラー'),'err'); setRunning(false); return; }
   const {job_id}=await res.json();
   await streamJob(job_id);
@@ -1338,7 +1397,7 @@ function handleMsg(msg) {
       const c=msg.data; addLog(`  対象: ${c.target_section||'未確定'} (${c.target_section_confidence||'-'})`);
       (c.issues||[]).forEach(i=>{ const sv={'high':'🔴','medium':'🟡','low':'🟢'}[i.severity]||'🟢'; addLog(`  ${sv} [${i.category}] ${i.problem}`); }); break;
     }
-    case 'target': addLog(`  🎯 対象確定: ${msg.section}`); break;
+    case 'target': addLog(`  🎯 対象確定${msg.progress||''}: ${msg.section}`); break;
     case 'editor_result': {
       const d=msg.improved.length-msg.original.length;
       addLog(`  完了: ${msg.original.length}字 → ${msg.improved.length}字 (${d>=0?'+':''}${d})`);
@@ -1346,7 +1405,11 @@ function handleMsg(msg) {
     }
     case 'validation': renderVal(msg.data); break;
     case 'coherence_result': renderCoh(msg.report); break;
-    case 'complete': addLog(msg.iter?`✅ #${msg.iter} 完了 (スコア:${msg.score}, ${msg.verdict})`:('✅ '+(msg.message||'完了')),'ok'); break;
+    case 'complete': {
+      if (msg.targets?.length) addLog(`✅ ${msg.targets.length} セクション完了 (${msg.targets.join(', ')})`,'ok');
+      else addLog(msg.iter?`✅ #${msg.iter} 完了 (スコア:${msg.score}, ${msg.verdict})`:('✅ '+(msg.message||'完了')),'ok');
+      break;
+    }
     case 'error': addLog('❌ '+msg.message,'err'); break;
   }
 }
